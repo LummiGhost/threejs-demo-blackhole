@@ -1,0 +1,20 @@
+{
+  "name": "interstellar-blackhole",
+  "version": "1.0.0",
+  "description": "《星际穿越》黑洞效果 - Three.js实现",
+  "main": "index.html",
+  "scripts": {
+    "dev": "npx vite",
+    "build": "npx vite build",
+    "preview": "npx vite preview"
+  },
+  "keywords": ["three.js", "blackhole", "interstellar", "physics", "gravity", "visualization"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^4.4.5"
+  },
+  "dependencies": {
+    "three": "^0.157.0"
+  }
+}
