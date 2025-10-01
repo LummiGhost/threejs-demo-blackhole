@@ -49,6 +49,19 @@ class BlackHoleVisualizer {
         this.frameCount = 0;
         this.lastTime = performance.now();
         this.fps = 60;
+
+        // 图层设置 (0: 前景, 1: 背景)
+        this.foregroundLayer = 0;
+        this.backgroundLayer = 1;
+
+        // 引力透镜辅助数据
+        this.blackHoleScreenPosition = new THREE.Vector2(0.5, 0.5);
+        this.blackHoleScreenRadius = 0.1;
+        this.lensStrengthBase = 1.2;
+        this._lensTmpVecA = new THREE.Vector3();
+        this._lensTmpVecB = new THREE.Vector3();
+        this._lensTmpVecC = new THREE.Vector3();
+        this._lensTmpVecD = new THREE.Vector3();
     }
     
     createScene() {
@@ -104,6 +117,7 @@ class BlackHoleVisualizer {
         });
         
         this.stars = new THREE.Points(starGeometry, starMaterial);
+        this.stars.layers.set(this.backgroundLayer);
         this.scene.add(this.stars);
     }
     
@@ -356,9 +370,11 @@ class BlackHoleVisualizer {
             {
                 minFilter: THREE.LinearFilter,
                 magFilter: THREE.LinearFilter,
-                format: THREE.RGBAFormat
+                format: THREE.RGBAFormat,
+                depthBuffer: false
             }
         );
+        this.backgroundRenderTarget.texture.colorSpace = THREE.SRGBColorSpace;
         
         // 创建用于引力透镜效果的场景
         this.lensScene = new THREE.Scene();
@@ -368,9 +384,9 @@ class BlackHoleVisualizer {
         const lensMaterial = new THREE.ShaderMaterial({
             uniforms: {
                 tBackground: { value: this.backgroundRenderTarget.texture },
-                blackHolePos: { value: new THREE.Vector2(0.5, 0.5) },
-                blackHoleRadius: { value: 0.1 },
-                lensStrength: { value: 1.5 },
+                blackHolePos: { value: this.blackHoleScreenPosition.clone() },
+                blackHoleRadius: { value: this.blackHoleScreenRadius },
+                lensStrength: { value: this.lensStrengthBase },
                 resolution: { value: new THREE.Vector2(this.width, this.height) },
                 time: { value: 0 }
             },
@@ -390,46 +406,32 @@ class BlackHoleVisualizer {
                 uniform float time;
                 varying vec2 vUv;
                 
-                vec2 gravitationalLens(vec2 uv, vec2 blackHolePos, float radius, float strength) {
-                    vec2 delta = uv - blackHolePos;
-                    float distance = length(delta);
-                    
-                    if (distance < radius * 3.0) {
-                        // 计算引力透镜效应
-                        float lensEffect = strength / (distance + 0.01);
-                        vec2 distortion = normalize(delta) * lensEffect * 0.1;
-                        
-                        // 添加轻微的旋转效应
-                        float angle = atan(delta.y, delta.x) + time * 0.1;
-                        mat2 rotation = mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
-                        distortion = rotation * distortion;
-                        
-                        return uv + distortion;
-                    }
-                    
-                    return uv;
-                }
-                
                 void main() {
-                    // 简化：将黑洞固定在屏幕中心
-                    vec2 blackHoleUV = vec2(0.5, 0.5);
-                    
-                    // 应用引力透镜效果
-                    vec2 lensedUV = gravitationalLens(vUv, blackHoleUV, blackHoleRadius, lensStrength);
-                    
-                    // 采样背景纹理
-                    vec4 background = texture2D(tBackground, lensedUV);
-                    
-                    // 添加额外的边缘暗化效果
-                    float edgeDarkening = 1.0;
-                    vec2 deltaFromCenter = vUv - blackHoleUV;
-                    float distFromBlackHole = length(deltaFromCenter);
-                    
-                    if (distFromBlackHole < blackHoleRadius * 2.0) {
-                        edgeDarkening = smoothstep(blackHoleRadius * 0.5, blackHoleRadius * 2.0, distFromBlackHole);
+                    vec2 delta = vUv - blackHolePos;
+                    float distance = length(delta);
+                    float eventHorizon = blackHoleRadius;
+                    float influenceRadius = eventHorizon * 8.0;
+
+                    if (distance < eventHorizon) {
+                        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                        return;
                     }
-                    
-                    gl_FragColor = vec4(background.rgb * edgeDarkening, background.a);
+
+                    float falloff = 1.0 - smoothstep(eventHorizon, influenceRadius, distance);
+                    float safeDistance = max(distance, eventHorizon * 0.75);
+                    vec2 direction = distance > 0.0 ? delta / distance : vec2(0.0, 0.0);
+                    float deflection = lensStrength * (eventHorizon * eventHorizon) / (safeDistance * safeDistance + eventHorizon * eventHorizon);
+                    vec2 warpedUV = vUv - direction * deflection;
+                    warpedUV = clamp(warpedUV, vec2(0.001), vec2(0.999));
+
+                    vec2 finalUV = mix(vUv, warpedUV, falloff);
+                    vec2 aberration = direction * deflection * 0.1;
+                    vec3 color;
+                    color.r = texture2D(tBackground, clamp(finalUV + aberration, vec2(0.001), vec2(0.999))).r;
+                    color.g = texture2D(tBackground, clamp(finalUV, vec2(0.001), vec2(0.999))).g;
+                    color.b = texture2D(tBackground, clamp(finalUV - aberration, vec2(0.001), vec2(0.999))).b;
+                    float brightness = 1.0 + falloff * 0.15;
+                    gl_FragColor = vec4(color * brightness, 1.0);
                 }
             `
         });
@@ -437,7 +439,9 @@ class BlackHoleVisualizer {
         // 创建全屏四边形
         const lensGeometry = new THREE.PlaneGeometry(2, 2);
         this.lensMesh = new THREE.Mesh(lensGeometry, lensMaterial);
+        this.lensMesh.frustumCulled = false;
         this.lensScene.add(this.lensMesh);
+        this.lensMaterial = lensMaterial;
         
         // 修改渲染器设置以支持多通道渲染
         this.enableLensing = true;
@@ -447,6 +451,10 @@ class BlackHoleVisualizer {
         this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 2000);
         this.camera.position.set(0, 15, 30);
         this.camera.lookAt(0, 0, 0);
+
+        // 默认启用前景与背景图层
+        this.camera.layers.enable(this.foregroundLayer);
+        this.camera.layers.enable(this.backgroundLayer);
     }
     
     createRenderer() {
@@ -558,6 +566,41 @@ class BlackHoleVisualizer {
         this.camera.position.set(x, y, z);
         this.camera.lookAt(this.cameraTarget);
     }
+
+    updateLensingUniforms() {
+        if (!this.lensMesh || !this.eventHorizon || !this.camera) {
+            return;
+        }
+
+        const uniforms = this.lensMesh.material.uniforms;
+
+        const centerWorld = this.eventHorizon.getWorldPosition(this._lensTmpVecA);
+        this._lensTmpVecB.set(this.eventHorizonRadius, 0, 0);
+        this.eventHorizon.localToWorld(this._lensTmpVecB);
+        this._lensTmpVecC.set(0, this.eventHorizonRadius, 0);
+        this.eventHorizon.localToWorld(this._lensTmpVecC);
+
+        const centerNDC = this._lensTmpVecD.copy(centerWorld).project(this.camera);
+        this._lensTmpVecB.project(this.camera);
+        this._lensTmpVecC.project(this.camera);
+
+        const radiusX = Math.abs(this._lensTmpVecB.x - centerNDC.x) * 0.5;
+        const radiusY = Math.abs(this._lensTmpVecC.y - centerNDC.y) * 0.5;
+        const radius = Math.max(0.0005, Math.max(radiusX, radiusY));
+
+        this.blackHoleScreenPosition.set(
+            centerNDC.x * 0.5 + 0.5,
+            -centerNDC.y * 0.5 + 0.5
+        );
+        this.blackHoleScreenRadius = radius;
+
+        uniforms.blackHolePos.value.copy(this.blackHoleScreenPosition);
+        uniforms.blackHoleRadius.value = this.blackHoleScreenRadius;
+
+        const cameraDistance = this.camera.position.distanceTo(centerWorld);
+        const strength = this.lensStrengthBase * THREE.MathUtils.clamp(30 / cameraDistance, 0.6, 2.5);
+        uniforms.lensStrength.value = strength;
+    }
     
     animate() {
         requestAnimationFrame(this.animate.bind(this));
@@ -649,19 +692,38 @@ class BlackHoleVisualizer {
     
     render() {
         if (this.enableLensing && this.backgroundRenderTarget && this.lensScene) {
-            // 第一步：渲染背景到纹理
+            this.updateLensingUniforms();
+
+            // 第一步：仅渲染背景层 (星空) 到纹理
+            this.camera.layers.set(this.backgroundLayer);
             this.renderer.setRenderTarget(this.backgroundRenderTarget);
+            this.renderer.clear(true, true, true);
             this.renderer.render(this.scene, this.camera);
-            
-            // 更新透镜效果的uniforms
-            this.lensMesh.material.uniforms.tBackground.value = this.backgroundRenderTarget.texture;
-            this.lensMesh.material.uniforms.time.value = this.time;
-            
-            // 第二步：应用引力透镜效果并渲染到屏幕
             this.renderer.setRenderTarget(null);
+
+            // 更新透镜效果的 uniforms
+            const lensUniforms = this.lensMesh.material.uniforms;
+            lensUniforms.tBackground.value = this.backgroundRenderTarget.texture;
+            lensUniforms.time.value = this.time;
+
+            // 第二步：将引力透镜结果渲染到屏幕
+            this.renderer.autoClear = true;
             this.renderer.render(this.lensScene, this.lensCamera);
+
+            // 第三步：叠加前景对象 (黑洞、吸积盘等)
+            this.camera.layers.set(this.foregroundLayer);
+            this.renderer.autoClear = false;
+            this.renderer.clearDepth();
+            this.renderer.render(this.scene, this.camera);
+            this.renderer.autoClear = true;
+
+            // 恢复相机可见层到默认状态 (前景+背景)
+            this.camera.layers.enable(this.foregroundLayer);
+            this.camera.layers.enable(this.backgroundLayer);
         } else {
-            // 正常渲染
+            // 正常渲染时包含前景与背景
+            this.camera.layers.enable(this.foregroundLayer);
+            this.camera.layers.enable(this.backgroundLayer);
             this.renderer.render(this.scene, this.camera);
         }
     }
