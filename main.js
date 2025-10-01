@@ -130,7 +130,8 @@ class BlackHoleVisualizer {
             opacity: 1.0
         });
         
-        this.eventHorizon = new THREE.Mesh(eventHorizonGeometry, eventHorizonMaterial);
+    this.eventHorizon = new THREE.Mesh(eventHorizonGeometry, eventHorizonMaterial);
+    this.eventHorizon.layers.set(this.foregroundLayer);
         this.scene.add(this.eventHorizon);
         
         // 创建黑洞光晕效果 (引力红移)
@@ -162,7 +163,8 @@ class BlackHoleVisualizer {
             `
         });
         
-        this.blackHoleGlow = new THREE.Mesh(glowGeometry, glowMaterial);
+    this.blackHoleGlow = new THREE.Mesh(glowGeometry, glowMaterial);
+    this.blackHoleGlow.layers.set(this.foregroundLayer);
         this.scene.add(this.blackHoleGlow);
         
         // 创建引力扭曲效果的可视化环
@@ -179,6 +181,7 @@ class BlackHoleVisualizer {
             
             const ring = new THREE.Mesh(ringGeometry, ringMaterial);
             ring.rotation.x = Math.PI / 2;
+            ring.layers.set(this.foregroundLayer);
             distortionRings.push(ring);
             this.scene.add(ring);
         }
@@ -288,7 +291,8 @@ class BlackHoleVisualizer {
             `
         });
         
-        this.accretionDisk = new THREE.Mesh(diskGeometry, diskMaterial);
+    this.accretionDisk = new THREE.Mesh(diskGeometry, diskMaterial);
+    this.accretionDisk.layers.set(this.foregroundLayer);
         this.accretionDisk.rotation.x = Math.PI / 2; // 使其水平
         this.scene.add(this.accretionDisk);
         
@@ -357,7 +361,8 @@ class BlackHoleVisualizer {
             blending: THREE.AdditiveBlending
         });
         
-        this.accretionParticles = new THREE.Points(geometry, material);
+    this.accretionParticles = new THREE.Points(geometry, material);
+    this.accretionParticles.layers.set(this.foregroundLayer);
         this.accretionParticles.userData = { velocities: velocities };
         this.scene.add(this.accretionParticles);
     }
@@ -601,6 +606,26 @@ class BlackHoleVisualizer {
         const strength = this.lensStrengthBase * THREE.MathUtils.clamp(30 / cameraDistance, 0.6, 2.5);
         uniforms.lensStrength.value = strength;
     }
+
+    // 临时隐藏/恢复前景对象，避免第一步渲染进入背景纹理
+    _toggleForeground(show, prevState) {
+        const nodes = [
+            this.eventHorizon,
+            this.blackHoleGlow,
+            ...(this.distortionRings || []),
+            this.accretionDisk,
+            this.accretionParticles
+        ].filter(Boolean);
+
+        if (prevState) {
+            nodes.forEach((n, i) => (n.visible = prevState[i]));
+            return null;
+        }
+
+        const snapshot = nodes.map(n => n.visible);
+        nodes.forEach(n => (n.visible = !!show));
+        return snapshot;
+    }
     
     animate() {
         requestAnimationFrame(this.animate.bind(this));
@@ -694,12 +719,13 @@ class BlackHoleVisualizer {
         if (this.enableLensing && this.backgroundRenderTarget && this.lensScene) {
             this.updateLensingUniforms();
 
-            // 第一步：仅渲染背景层 (星空) 到纹理
-            this.camera.layers.set(this.backgroundLayer);
+            // 第一步：隐藏前景，仅渲染背景到纹理
+            const prevVis = this._toggleForeground(false);
             this.renderer.setRenderTarget(this.backgroundRenderTarget);
             this.renderer.clear(true, true, true);
             this.renderer.render(this.scene, this.camera);
             this.renderer.setRenderTarget(null);
+            this._toggleForeground(true, prevVis);
 
             // 更新透镜效果的 uniforms
             const lensUniforms = this.lensMesh.material.uniforms;
@@ -711,19 +737,12 @@ class BlackHoleVisualizer {
             this.renderer.render(this.lensScene, this.lensCamera);
 
             // 第三步：叠加前景对象 (黑洞、吸积盘等)
-            this.camera.layers.set(this.foregroundLayer);
             this.renderer.autoClear = false;
             this.renderer.clearDepth();
             this.renderer.render(this.scene, this.camera);
             this.renderer.autoClear = true;
-
-            // 恢复相机可见层到默认状态 (前景+背景)
-            this.camera.layers.enable(this.foregroundLayer);
-            this.camera.layers.enable(this.backgroundLayer);
         } else {
-            // 正常渲染时包含前景与背景
-            this.camera.layers.enable(this.foregroundLayer);
-            this.camera.layers.enable(this.backgroundLayer);
+            // 正常渲染
             this.renderer.render(this.scene, this.camera);
         }
     }
